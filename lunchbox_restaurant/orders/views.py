@@ -1,11 +1,12 @@
+import json  # Add this import statement
+
+from django.http import JsonResponse
 import stripe
-# from .forms import OrderForm, OrderItemFormSet
 from .models import Order, OrderItem, Dish
 from .forms import RegistrationForm
 from django.conf import settings
 from django.shortcuts import render, redirect
 from django.contrib.auth.decorators import login_required
-from django.shortcuts import render, redirect
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.forms import AuthenticationForm
 
@@ -17,7 +18,7 @@ def register(request):
         if form.is_valid():
             user = form.save()
             login(request, user)
-            return redirect('order')  # Redirect to the order page or any other page
+            return redirect('order')
     else:
         form = RegistrationForm()
     
@@ -45,13 +46,11 @@ def logout_view(request):
 @login_required
 def order_view(request):
     if request.method == 'POST':
-        # Create the order
         order = Order(customer=request.user)
         order.save()
         total_amount = 0
         line_items = []
         
-        # Process each item in the order
         for dish_id, quantity in zip(request.POST.getlist('dishes[]'),
                                      request.POST.getlist('quantities[]')):
             dish_id = int(dish_id)
@@ -61,16 +60,14 @@ def order_view(request):
             order_item.save()
             total_amount += dish.price * quantity
             
-            # Add to Stripe line items
             line_items.append({
                 'price_data': {
                     'currency': 'usd',
                     'product_data': {
                         'name': dish.name,
-                        # If you have images for the product, you can add them here
                         'images': [request.build_absolute_uri(dish.image.url)],
                     },
-                    'unit_amount': int(dish.price * 100),  # Amount in cents
+                    'unit_amount': int(dish.price * 100),
                 },
                 'quantity': quantity,
             })
@@ -78,20 +75,17 @@ def order_view(request):
         order.total_amount = total_amount
         order.save()
 
-        # Create a Stripe Checkout session
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=line_items,
             mode='payment',
-            success_url=request.build_absolute_uri('/success/'),  # Redirect after successful payment
-            cancel_url=request.build_absolute_uri('/cancel/'),  # Redirect if payment is canceled
-            customer_email=request.user.email,  # Optional: Pre-fill user's email
+            success_url=request.build_absolute_uri('/success/'),
+            cancel_url=request.build_absolute_uri('/cancel/'),
+            customer_email=request.user.email,
         )
 
-        # Redirect to Stripe Checkout
         return redirect(session.url, code=303)
 
-    # If GET request, display the order form
     dishes = []
     for dish in Dish.objects.all():
         dishes.append({
@@ -120,3 +114,50 @@ def previous_orders(request):
             'items':order_items
         })
     return render(request, 'orders/previous_order.html', {'list':tuple(orders_list)})
+
+@login_required
+def submit_order(request):
+    if request.method == 'POST':
+        cart_items = request.POST.get('cart_items', '[]')
+        cart_items = json.loads(cart_items)  # Use json.loads here
+
+        order = Order(customer=request.user)
+        order.save()
+        total_amount = 0
+        line_items = []
+
+        for item in cart_items:
+            dish_id = item['id']
+            quantity = item['quantity']
+            dish = Dish.objects.get(pk=dish_id)
+            order_item = OrderItem(order=order, dish=dish, quantity=quantity)
+            order_item.save()
+            total_amount += dish.price * quantity
+
+            line_items.append({
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {
+                        'name': dish.name,
+                        'images': [request.build_absolute_uri(dish.image.url)],
+                    },
+                    'unit_amount': int(dish.price * 100),
+                },
+                'quantity': quantity,
+            })
+
+        order.total_amount = total_amount
+        order.save()
+
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=line_items,
+            mode='payment',
+            success_url=request.build_absolute_uri('/success/'),
+            cancel_url=request.build_absolute_uri('/cancel/'),
+            customer_email=request.user.email,
+        )
+
+        return JsonResponse({'session_url': session.url})
+
+    return JsonResponse({'error': 'Invalid request'}, status=400)
